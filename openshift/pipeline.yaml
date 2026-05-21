@@ -392,6 +392,8 @@ spec:
           value: $(params.git-user-name)
         - name: GIT_USER_EMAIL
           value: $(params.git-user-email)
+        - name: DELETE_EXISTING
+          value: "false"
         - name: GIT_SCRIPT
           value: |
             set -eu
