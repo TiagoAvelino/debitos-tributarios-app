@@ -36,7 +36,10 @@ oc -n debitos-tributarios rollout status deployment/sonarqube
 ```
 
 The Docker Hub pull secret is needed because the official SonarQube server image
-is published from Docker Hub and anonymous cluster pulls can hit rate limits.
+and some CI helper images are published from Docker Hub and anonymous cluster
+pulls can hit rate limits. The application Dockerfile itself uses OpenShift
+internal base images so Buildah can push to the internal registry with the
+pipeline service account.
 
 The repository is public, so cloning does not require credentials. The final
 GitOps task still needs GitHub write credentials because it commits and pushes
