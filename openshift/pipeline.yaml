@@ -458,7 +458,7 @@ spec:
         - name: application-name
           value: $(params.argocd-application)
         - name: revision
-          value: $(tasks.update-helm-image.results.COMMIT)
+          value: $(params.git-revision)
         - name: flags
           value: --
         - name: argocd-version
