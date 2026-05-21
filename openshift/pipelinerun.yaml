@@ -14,7 +14,7 @@ spec:
     - name: git-revision
       value: main
     - name: app-subdir
-      value: debitos-tributarios
+      value: .
     - name: helm-values-file
       value: helm/debitos-tributarios/values.yaml
     - name: image-namespace
@@ -24,20 +24,14 @@ spec:
     - name: audit-level
       value: high
     - name: enable-sonarqube
-      value: "false"
+      value: "true"
     - name: sonar-host-url
-      value: ""
+      value: http://sonarqube:9000
     - name: sonar-project-key
       value: debitos-tributarios
     - name: sonar-token-secret-name
       value: sonarqube-token
     - name: sonar-token-secret-key
-      value: token
-    - name: git-credentials-secret-name
-      value: github-credentials
-    - name: git-username-secret-key
-      value: username
-    - name: git-token-secret-key
       value: token
     - name: git-user-name
       value: openshift-pipeline

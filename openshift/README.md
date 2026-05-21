@@ -22,8 +22,25 @@ Apply the pipeline resources:
 oc apply -f openshift/pipeline.yaml
 ```
 
-Create the GitHub credentials secret used by the final task to push the Helm
-values update:
+Install SonarQube in the same namespace:
+
+```sh
+oc -n debitos-tributarios create secret docker-registry dockerhub-pull-secret \
+  --docker-server=docker.io \
+  --docker-username=YOUR_DOCKERHUB_USERNAME \
+  --docker-password=YOUR_DOCKERHUB_TOKEN_OR_PASSWORD \
+  --docker-email=YOUR_EMAIL
+oc apply -f openshift/sonarqube.yaml
+oc -n debitos-tributarios rollout status deployment/sonarqube-postgresql
+oc -n debitos-tributarios rollout status deployment/sonarqube
+```
+
+The Docker Hub pull secret is needed because the official SonarQube server image
+is published from Docker Hub and anonymous cluster pulls can hit rate limits.
+
+The repository is public, so cloning does not require credentials. The final
+GitOps task still needs GitHub write credentials because it commits and pushes
+the new Helm image tag back to the repository:
 
 ```sh
 oc -n debitos-tributarios create secret generic github-credentials \
@@ -50,25 +67,36 @@ The default Git repository is:
 https://github.com/TiagoAvelino/debitos-tributarios-app.git
 ```
 
-To enable SonarQube, set these `PipelineRun` params:
+That repository keeps the app at the repository root, so the default
+`app-subdir` is `.`.
+
+SonarQube is enabled by default and the pipeline uses the in-namespace service:
 
 ```yaml
-- name: enable-sonarqube
-  value: "true"
 - name: sonar-host-url
-  value: https://sonarqube.example.com
-- name: sonar-project-key
-  value: debitos-tributarios
-- name: sonar-token-secret-name
-  value: sonarqube-token
-- name: sonar-token-secret-key
-  value: token
+  value: http://sonarqube:9000
 ```
 
-The token should exist as a secret in the `debitos-tributarios` namespace:
+Create a SonarQube token from the SonarQube UI, then store it for the scanner:
+
+The default first login for this SonarQube container is `admin` / `admin`.
+SonarQube will ask you to change the password before you generate a token.
 
 ```sh
 oc -n debitos-tributarios create secret generic sonarqube-token --from-literal=token=your-token
+```
+
+The SonarQube route for setup is:
+
+```sh
+oc -n debitos-tributarios get route sonarqube
+```
+
+To disable SonarQube for a run, set this `PipelineRun` param:
+
+```yaml
+- name: enable-sonarqube
+  value: "false"
 ```
 
 After the run succeeds, the Helm values file in Git will point to the new image:

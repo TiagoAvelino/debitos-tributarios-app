@@ -8,6 +8,8 @@ kind: ServiceAccount
 metadata:
   name: pipeline
   namespace: debitos-tributarios
+imagePullSecrets:
+  - name: dockerhub-pull-secret
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -170,7 +172,8 @@ spec:
           -Dsonar.projectKey="$(params.sonar-project-key)" \
           -Dsonar.projectName="$(params.sonar-project-key)" \
           -Dsonar.sources=frontend/src \
-          -Dsonar.exclusions=frontend/node_modules/**,frontend/dist/**
+          -Dsonar.exclusions=frontend/node_modules/**,frontend/dist/** \
+          -Dsonar.qualitygate.wait=true
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -370,7 +373,7 @@ spec:
       description: Branch to build and update with the new Helm image tag.
     - name: app-subdir
       type: string
-      default: debitos-tributarios
+      default: .
       description: Path from the repository root to this app.
     - name: helm-values-file
       type: string
@@ -390,11 +393,11 @@ spec:
       description: npm audit threshold.
     - name: enable-sonarqube
       type: string
-      default: "false"
+      default: "true"
       description: Set to true to run the SonarQube quality scan.
     - name: sonar-host-url
       type: string
-      default: ""
+      default: http://sonarqube:9000
       description: SonarQube server URL.
     - name: sonar-project-key
       type: string
@@ -525,28 +528,6 @@ spec:
       workspaces:
         - name: source
           workspace: shared-workspace
-    - name: argocd-sync
-      runAfter:
-        - update-helm-image
-      taskRef:
-        name: argocd-sync
-      params:
-        - name: argocd-server
-          value: $(params.argocd-server)
-        - name: argocd-application
-          value: $(params.argocd-application)
-        - name: argocd-revision
-          value: $(tasks.update-helm-image.results.commit)
-        - name: argocd-insecure
-          value: $(params.argocd-insecure)
-        - name: argocd-grpc-web
-          value: $(params.argocd-grpc-web)
-        - name: argocd-sync-timeout
-          value: $(params.argocd-sync-timeout)
-        - name: argocd-token-secret-name
-          value: $(params.argocd-token-secret-name)
-        - name: argocd-token-secret-key
-          value: $(params.argocd-token-secret-key)
     - name: sonarqube-scan
       runAfter:
         - frontend-build
@@ -576,6 +557,7 @@ spec:
         - dependency-audit
         - dockerfile-lint
         - frontend-build
+        - sonarqube-scan
       taskRef:
         resolver: cluster
         params:
@@ -628,3 +610,25 @@ spec:
       workspaces:
         - name: source
           workspace: shared-workspace
+    - name: argocd-sync
+      runAfter:
+        - update-helm-image
+      taskRef:
+        name: argocd-sync
+      params:
+        - name: argocd-server
+          value: $(params.argocd-server)
+        - name: argocd-application
+          value: $(params.argocd-application)
+        - name: argocd-revision
+          value: $(tasks.update-helm-image.results.commit)
+        - name: argocd-insecure
+          value: $(params.argocd-insecure)
+        - name: argocd-grpc-web
+          value: $(params.argocd-grpc-web)
+        - name: argocd-sync-timeout
+          value: $(params.argocd-sync-timeout)
+        - name: argocd-token-secret-name
+          value: $(params.argocd-token-secret-name)
+        - name: argocd-token-secret-key
+          value: $(params.argocd-token-secret-key)
