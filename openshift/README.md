@@ -1,6 +1,7 @@
 # OpenShift Pipeline
 
-This pipeline builds and deploys the React/Vite frontend with a small CI/CD gate:
+This pipeline builds the React/Vite frontend image and hands deployment to Argo CD
+by updating the Helm image values in Git:
 
 1. Clone the Git repository.
 2. Install frontend dependencies with `npm ci`.
@@ -9,8 +10,11 @@ This pipeline builds and deploys the React/Vite frontend with a small CI/CD gate
 5. Build the frontend with Vite.
 6. Optionally scan the project with SonarQube.
 7. Build and push the image with Buildah.
-8. Deploy the existing Helm chart with an OpenShift Route enabled.
-9. Verify the rollout and print the route URL.
+8. Commit and push the new image `repository` and `tag` to the Helm values file.
+9. Refresh, sync, and wait for the Argo CD application.
+
+Argo CD should watch the same Git repository and deploy the Helm chart after this
+pipeline pushes the image update.
 
 Apply the pipeline resources:
 
@@ -18,15 +22,33 @@ Apply the pipeline resources:
 oc apply -f openshift/pipeline.yaml
 ```
 
-Start a deployment from a Git repository:
+Create the GitHub credentials secret used by the final task to push the Helm
+values update:
+
+```sh
+oc -n debitos-tributarios create secret generic github-credentials \
+  --from-literal=username=YOUR_GITHUB_USERNAME \
+  --from-literal=token=YOUR_GITHUB_TOKEN
+```
+
+Create the Argo CD token secret used by the sync task:
+
+```sh
+oc -n debitos-tributarios create secret generic argocd-token \
+  --from-literal=token=YOUR_ARGOCD_AUTH_TOKEN
+```
+
+Start a pipeline run:
 
 ```sh
 oc create -f openshift/pipelinerun.yaml
 ```
 
-Before creating the `PipelineRun`, replace `spec.params.git-url` in
-`openshift/pipelinerun.yaml` with the real Git URL for the repository that
-contains this directory.
+The default Git repository is:
+
+```text
+https://github.com/TiagoAvelino/debitos-tributarios-app.git
+```
 
 To enable SonarQube, set these `PipelineRun` params:
 
@@ -49,8 +71,13 @@ The token should exist as a secret in the `debitos-tributarios` namespace:
 oc -n debitos-tributarios create secret generic sonarqube-token --from-literal=token=your-token
 ```
 
-After the run succeeds, get the frontend URL:
+After the run succeeds, the Helm values file in Git will point to the new image:
 
-```sh
-oc get route debitos-tributarios -n debitos-tributarios
+```yaml
+image:
+  repository: image-registry.openshift-image-registry.svc:5000/debitos-tributarios/debitos-tributarios
+  tag: "<commit-sha>"
 ```
+
+Then the pipeline asks Argo CD to sync the `debitos-tributarios` application at
+that new Git commit.

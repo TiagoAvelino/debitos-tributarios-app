@@ -175,57 +175,215 @@ spec:
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: rollout-verify
-  namespace: debitos-tributarios
-spec:
-  params:
-    - name: release-name
-      type: string
-    - name: deploy-namespace
-      type: string
-  steps:
-    - name: verify
-      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
-      script: |
-        #!/bin/sh
-        set -eu
-        oc -n "$(params.deploy-namespace)" rollout status "deployment/$(params.release-name)" --timeout=180s
-        oc -n "$(params.deploy-namespace)" get route "$(params.release-name)" -o jsonpath='Frontend URL: https://{.spec.host}{"\n"}'
----
-apiVersion: tekton.dev/v1
-kind: Pipeline
-metadata:
-  name: debitos-tributarios-deploy
+  name: update-helm-image
   namespace: debitos-tributarios
 spec:
   params:
     - name: git-url
       type: string
+    - name: git-revision
+      type: string
+    - name: app-subdir
+      type: string
+    - name: values-file
+      type: string
+    - name: image-repository
+      type: string
+    - name: image-tag
+      type: string
+    - name: git-user-name
+      type: string
+      default: openshift-pipeline
+    - name: git-user-email
+      type: string
+      default: openshift-pipeline@example.com
+    - name: git-credentials-secret-name
+      type: string
+      default: github-credentials
+    - name: git-username-secret-key
+      type: string
+      default: username
+    - name: git-token-secret-key
+      type: string
+      default: token
+  results:
+    - name: commit
+      description: Git commit SHA pushed for the Helm image update.
+  workspaces:
+    - name: source
+  steps:
+    - name: commit-image
+      image: docker.io/alpine/git:2.45.2
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: GIT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: $(params.git-credentials-secret-name)
+              key: $(params.git-username-secret-key)
+        - name: GIT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.git-credentials-secret-name)
+              key: $(params.git-token-secret-key)
+      script: |
+        #!/bin/sh
+        set -eu
+
+        values_path="$(params.app-subdir)/$(params.values-file)"
+        image_repository="$(params.image-repository)"
+        image_tag="$(params.image-tag)"
+
+        if [ ! -f "${values_path}" ]; then
+          echo "Helm values file not found: ${values_path}" >&2
+          exit 1
+        fi
+
+        tmp_file="$(mktemp)"
+        awk -v repo="${image_repository}" -v tag="${image_tag}" '
+          /^image:/ { in_image=1; print; next }
+          in_image && /^[^[:space:]]/ { in_image=0 }
+          in_image && /^[[:space:]]*repository:/ {
+            sub(/repository:.*/, "repository: " repo)
+            print
+            next
+          }
+          in_image && /^[[:space:]]*tag:/ {
+            sub(/tag:.*/, "tag: \"" tag "\"")
+            print
+            next
+          }
+          { print }
+        ' "${values_path}" > "${tmp_file}"
+        mv "${tmp_file}" "${values_path}"
+
+        git config --global --add safe.directory "$(workspaces.source.path)"
+        git config user.name "$(params.git-user-name)"
+        git config user.email "$(params.git-user-email)"
+
+        if git diff --quiet -- "${values_path}"; then
+          echo "Helm image already points to ${image_repository}:${image_tag}; nothing to commit."
+          git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
+          exit 0
+        fi
+
+        git add "${values_path}"
+        git commit -m "chore(gitops): update frontend image to ${image_tag}"
+        git rev-parse HEAD | tr -d '\n' > "$(results.commit.path)"
+
+        case "$(params.git-url)" in
+          https://*)
+            authenticated_url="https://${GIT_USERNAME}:${GIT_TOKEN}@$(printf '%s' "$(params.git-url)" | sed 's#^https://##')"
+            ;;
+          *)
+            echo "Only HTTPS Git remotes are supported by this task." >&2
+            exit 1
+            ;;
+        esac
+
+        git remote set-url origin "${authenticated_url}"
+        git push origin "HEAD:$(params.git-revision)"
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: argocd-sync
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: argocd-server
+      type: string
+    - name: argocd-application
+      type: string
+    - name: argocd-revision
+      type: string
+    - name: argocd-insecure
+      type: string
+      default: "true"
+    - name: argocd-grpc-web
+      type: string
+      default: "true"
+    - name: argocd-sync-timeout
+      type: string
+      default: "300"
+    - name: argocd-token-secret-name
+      type: string
+      default: argocd-token
+    - name: argocd-token-secret-key
+      type: string
+      default: token
+  steps:
+    - name: sync
+      image: quay.io/argoproj/argocd:v2.11.7
+      env:
+        - name: ARGOCD_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.argocd-token-secret-name)
+              key: $(params.argocd-token-secret-key)
+      script: |
+        #!/bin/sh
+        set -eu
+
+        optional_flags=""
+        if [ "$(params.argocd-insecure)" = "true" ]; then
+          optional_flags="${optional_flags} --insecure"
+        fi
+        if [ "$(params.argocd-grpc-web)" = "true" ]; then
+          optional_flags="${optional_flags} --grpc-web"
+        fi
+
+        argocd app get "$(params.argocd-application)" \
+          --server "$(params.argocd-server)" \
+          --auth-token "${ARGOCD_AUTH_TOKEN}" \
+          ${optional_flags} \
+          --refresh
+
+        argocd app sync "$(params.argocd-application)" \
+          --server "$(params.argocd-server)" \
+          --auth-token "${ARGOCD_AUTH_TOKEN}" \
+          ${optional_flags} \
+          --revision "$(params.argocd-revision)"
+
+        argocd app wait "$(params.argocd-application)" \
+          --server "$(params.argocd-server)" \
+          --auth-token "${ARGOCD_AUTH_TOKEN}" \
+          ${optional_flags} \
+          --sync \
+          --health \
+          --timeout "$(params.argocd-sync-timeout)"
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: debitos-tributarios-gitops
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: git-url
+      type: string
+      default: https://github.com/TiagoAvelino/debitos-tributarios-app.git
       description: Git repository URL containing this project.
     - name: git-revision
       type: string
       default: main
-      description: Branch, tag, or commit to deploy.
+      description: Branch to build and update with the new Helm image tag.
     - name: app-subdir
       type: string
       default: debitos-tributarios
       description: Path from the repository root to this app.
-    - name: deploy-namespace
+    - name: helm-values-file
+      type: string
+      default: helm/debitos-tributarios/values.yaml
+      description: Path from the app subdirectory to the Helm values file Argo CD watches.
+    - name: image-namespace
       type: string
       default: debitos-tributarios
-      description: Namespace where the app is built and deployed.
+      description: Namespace whose internal registry image stream receives the built image.
     - name: image-name
       type: string
       default: debitos-tributarios
       description: Internal registry image stream name.
-    - name: release-name
-      type: string
-      default: debitos-tributarios
-      description: Helm release name.
-    - name: route-host
-      type: string
-      default: ""
-      description: Optional explicit OpenShift Route hostname.
     - name: audit-level
       type: string
       default: high
@@ -250,6 +408,54 @@ spec:
       type: string
       default: token
       description: Key inside the SonarQube token secret.
+    - name: git-credentials-secret-name
+      type: string
+      default: github-credentials
+      description: Secret with GitHub username and token used to push the Helm image update.
+    - name: git-username-secret-key
+      type: string
+      default: username
+      description: Key in the GitHub credentials secret containing the username.
+    - name: git-token-secret-key
+      type: string
+      default: token
+      description: Key in the GitHub credentials secret containing the token.
+    - name: git-user-name
+      type: string
+      default: openshift-pipeline
+      description: Git author name for the image update commit.
+    - name: git-user-email
+      type: string
+      default: openshift-pipeline@example.com
+      description: Git author email for the image update commit.
+    - name: argocd-server
+      type: string
+      default: openshift-gitops-server.openshift-gitops.svc.cluster.local:443
+      description: Argo CD API server used to sync the application.
+    - name: argocd-application
+      type: string
+      default: debitos-tributarios
+      description: Argo CD Application name to refresh, sync, and wait.
+    - name: argocd-insecure
+      type: string
+      default: "true"
+      description: Pass --insecure to the Argo CD CLI.
+    - name: argocd-grpc-web
+      type: string
+      default: "true"
+      description: Pass --grpc-web to the Argo CD CLI.
+    - name: argocd-sync-timeout
+      type: string
+      default: "300"
+      description: Seconds to wait for Argo CD sync and health.
+    - name: argocd-token-secret-name
+      type: string
+      default: argocd-token
+      description: Secret containing an Argo CD auth token.
+    - name: argocd-token-secret-key
+      type: string
+      default: token
+      description: Key inside the Argo CD token secret.
   workspaces:
     - name: shared-workspace
   tasks:
@@ -319,6 +525,28 @@ spec:
       workspaces:
         - name: source
           workspace: shared-workspace
+    - name: argocd-sync
+      runAfter:
+        - update-helm-image
+      taskRef:
+        name: argocd-sync
+      params:
+        - name: argocd-server
+          value: $(params.argocd-server)
+        - name: argocd-application
+          value: $(params.argocd-application)
+        - name: argocd-revision
+          value: $(tasks.update-helm-image.results.commit)
+        - name: argocd-insecure
+          value: $(params.argocd-insecure)
+        - name: argocd-grpc-web
+          value: $(params.argocd-grpc-web)
+        - name: argocd-sync-timeout
+          value: $(params.argocd-sync-timeout)
+        - name: argocd-token-secret-name
+          value: $(params.argocd-token-secret-name)
+        - name: argocd-token-secret-key
+          value: $(params.argocd-token-secret-key)
     - name: sonarqube-scan
       runAfter:
         - frontend-build
@@ -359,7 +587,7 @@ spec:
             value: buildah
       params:
         - name: IMAGE
-          value: image-registry.openshift-image-registry.svc:5000/$(params.deploy-namespace)/$(params.image-name):$(tasks.clone.results.COMMIT)
+          value: image-registry.openshift-image-registry.svc:5000/$(params.image-namespace)/$(params.image-name):$(tasks.clone.results.COMMIT)
         - name: DOCKERFILE
           value: $(params.app-subdir)/Dockerfile
         - name: CONTEXT
@@ -369,39 +597,34 @@ spec:
       workspaces:
         - name: source
           workspace: shared-workspace
-    - name: deploy
+    - name: update-helm-image
       runAfter:
         - build-image
       taskRef:
-        resolver: cluster
-        params:
-          - name: kind
-            value: task
-          - name: namespace
-            value: openshift-pipelines
-          - name: name
-            value: helm-upgrade-from-source
+        name: update-helm-image
       params:
-        - name: charts_dir
-          value: $(params.app-subdir)/helm/debitos-tributarios
-        - name: release_name
-          value: $(params.release-name)
-        - name: release_namespace
-          value: $(params.deploy-namespace)
-        - name: values_file
-          value: values.yaml
-        - name: overwrite_values
-          value: image.repository=image-registry.openshift-image-registry.svc:5000/$(params.deploy-namespace)/$(params.image-name),image.tag=$(tasks.clone.results.COMMIT),image.pullPolicy=Always,route.enabled=true,route.host=$(params.route-host)
+        - name: git-url
+          value: $(params.git-url)
+        - name: git-revision
+          value: $(params.git-revision)
+        - name: app-subdir
+          value: $(params.app-subdir)
+        - name: values-file
+          value: $(params.helm-values-file)
+        - name: image-repository
+          value: image-registry.openshift-image-registry.svc:5000/$(params.image-namespace)/$(params.image-name)
+        - name: image-tag
+          value: $(tasks.clone.results.COMMIT)
+        - name: git-user-name
+          value: $(params.git-user-name)
+        - name: git-user-email
+          value: $(params.git-user-email)
+        - name: git-credentials-secret-name
+          value: $(params.git-credentials-secret-name)
+        - name: git-username-secret-key
+          value: $(params.git-username-secret-key)
+        - name: git-token-secret-key
+          value: $(params.git-token-secret-key)
       workspaces:
         - name: source
           workspace: shared-workspace
-    - name: verify-rollout
-      runAfter:
-        - deploy
-      taskRef:
-        name: rollout-verify
-      params:
-        - name: release-name
-          value: $(params.release-name)
-        - name: deploy-namespace
-          value: $(params.deploy-namespace)

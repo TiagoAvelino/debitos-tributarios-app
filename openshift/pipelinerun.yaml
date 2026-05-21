@@ -1,28 +1,26 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: debitos-tributarios-deploy-
+  generateName: debitos-tributarios-gitops-
   namespace: debitos-tributarios
 spec:
   pipelineRef:
-    name: debitos-tributarios-deploy
+    name: debitos-tributarios-gitops
   taskRunTemplate:
     serviceAccountName: pipeline
   params:
     - name: git-url
-      value: https://example.com/your-org/your-repo.git
+      value: https://github.com/TiagoAvelino/debitos-tributarios-app.git
     - name: git-revision
       value: main
     - name: app-subdir
       value: debitos-tributarios
-    - name: deploy-namespace
+    - name: helm-values-file
+      value: helm/debitos-tributarios/values.yaml
+    - name: image-namespace
       value: debitos-tributarios
     - name: image-name
       value: debitos-tributarios
-    - name: release-name
-      value: debitos-tributarios
-    - name: route-host
-      value: ""
     - name: audit-level
       value: high
     - name: enable-sonarqube
@@ -34,6 +32,30 @@ spec:
     - name: sonar-token-secret-name
       value: sonarqube-token
     - name: sonar-token-secret-key
+      value: token
+    - name: git-credentials-secret-name
+      value: github-credentials
+    - name: git-username-secret-key
+      value: username
+    - name: git-token-secret-key
+      value: token
+    - name: git-user-name
+      value: openshift-pipeline
+    - name: git-user-email
+      value: openshift-pipeline@example.com
+    - name: argocd-server
+      value: openshift-gitops-server.openshift-gitops.svc.cluster.local:443
+    - name: argocd-application
+      value: debitos-tributarios
+    - name: argocd-insecure
+      value: "true"
+    - name: argocd-grpc-web
+      value: "true"
+    - name: argocd-sync-timeout
+      value: "300"
+    - name: argocd-token-secret-name
+      value: argocd-token
+    - name: argocd-token-secret-key
       value: token
   workspaces:
     - name: shared-workspace
