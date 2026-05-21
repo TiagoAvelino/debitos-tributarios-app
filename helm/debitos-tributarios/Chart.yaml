@@ -1,0 +1,6 @@
+apiVersion: v2
+name: debitos-tributarios
+description: Front-end React — simulação de emissão e consulta de débitos tributários
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

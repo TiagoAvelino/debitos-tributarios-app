@@ -1,0 +1,407 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: debitos-tributarios
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipeline
+  namespace: debitos-tributarios
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-edit
+  namespace: debitos-tributarios
+subjects:
+  - kind: ServiceAccount
+    name: pipeline
+    namespace: debitos-tributarios
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-image-builder
+  namespace: debitos-tributarios
+subjects:
+  - kind: ServiceAccount
+    name: pipeline
+    namespace: debitos-tributarios
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:image-builder
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: debitos-tributarios
+  namespace: debitos-tributarios
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: npm-ci
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: app-subdir
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: install
+      image: node:20-alpine
+      workingDir: $(workspaces.source.path)/$(params.app-subdir)/frontend
+      script: |
+        #!/bin/sh
+        set -eu
+        npm ci
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: npm-audit
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: app-subdir
+      type: string
+    - name: audit-level
+      type: string
+      default: high
+  workspaces:
+    - name: source
+  steps:
+    - name: audit
+      image: node:20-alpine
+      workingDir: $(workspaces.source.path)/$(params.app-subdir)/frontend
+      script: |
+        #!/bin/sh
+        set -eu
+        npm audit --audit-level="$(params.audit-level)"
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: frontend-build
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: app-subdir
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: build
+      image: node:20-alpine
+      workingDir: $(workspaces.source.path)/$(params.app-subdir)/frontend
+      script: |
+        #!/bin/sh
+        set -eu
+        npm run build
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: dockerfile-lint
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: app-subdir
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: hadolint
+      image: docker.io/hadolint/hadolint:v2.12.0-alpine
+      workingDir: $(workspaces.source.path)/$(params.app-subdir)
+      script: |
+        #!/bin/sh
+        set -eu
+        hadolint Dockerfile
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: sonarqube-scan
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: app-subdir
+      type: string
+    - name: sonar-host-url
+      type: string
+    - name: sonar-project-key
+      type: string
+    - name: sonar-token-secret-name
+      type: string
+      default: sonarqube-token
+    - name: sonar-token-secret-key
+      type: string
+      default: token
+  workspaces:
+    - name: source
+  steps:
+    - name: scan
+      image: docker.io/sonarsource/sonar-scanner-cli:5.0
+      workingDir: $(workspaces.source.path)/$(params.app-subdir)
+      env:
+        - name: SONAR_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.sonar-token-secret-name)
+              key: $(params.sonar-token-secret-key)
+      script: |
+        #!/bin/sh
+        set -eu
+        if [ -z "${SONAR_TOKEN:-}" ]; then
+          echo "SonarQube token secret is required when enable-sonarqube=true" >&2
+          exit 1
+        fi
+        sonar-scanner \
+          -Dsonar.host.url="$(params.sonar-host-url)" \
+          -Dsonar.token="${SONAR_TOKEN}" \
+          -Dsonar.projectKey="$(params.sonar-project-key)" \
+          -Dsonar.projectName="$(params.sonar-project-key)" \
+          -Dsonar.sources=frontend/src \
+          -Dsonar.exclusions=frontend/node_modules/**,frontend/dist/**
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: rollout-verify
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: release-name
+      type: string
+    - name: deploy-namespace
+      type: string
+  steps:
+    - name: verify
+      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+      script: |
+        #!/bin/sh
+        set -eu
+        oc -n "$(params.deploy-namespace)" rollout status "deployment/$(params.release-name)" --timeout=180s
+        oc -n "$(params.deploy-namespace)" get route "$(params.release-name)" -o jsonpath='Frontend URL: https://{.spec.host}{"\n"}'
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: debitos-tributarios-deploy
+  namespace: debitos-tributarios
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: Git repository URL containing this project.
+    - name: git-revision
+      type: string
+      default: main
+      description: Branch, tag, or commit to deploy.
+    - name: app-subdir
+      type: string
+      default: debitos-tributarios
+      description: Path from the repository root to this app.
+    - name: deploy-namespace
+      type: string
+      default: debitos-tributarios
+      description: Namespace where the app is built and deployed.
+    - name: image-name
+      type: string
+      default: debitos-tributarios
+      description: Internal registry image stream name.
+    - name: release-name
+      type: string
+      default: debitos-tributarios
+      description: Helm release name.
+    - name: route-host
+      type: string
+      default: ""
+      description: Optional explicit OpenShift Route hostname.
+    - name: audit-level
+      type: string
+      default: high
+      description: npm audit threshold.
+    - name: enable-sonarqube
+      type: string
+      default: "false"
+      description: Set to true to run the SonarQube quality scan.
+    - name: sonar-host-url
+      type: string
+      default: ""
+      description: SonarQube server URL.
+    - name: sonar-project-key
+      type: string
+      default: debitos-tributarios
+      description: SonarQube project key.
+    - name: sonar-token-secret-name
+      type: string
+      default: sonarqube-token
+      description: Secret containing the SonarQube token.
+    - name: sonar-token-secret-key
+      type: string
+      default: token
+      description: Key inside the SonarQube token secret.
+  workspaces:
+    - name: shared-workspace
+  tasks:
+    - name: clone
+      taskRef:
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: namespace
+            value: openshift-pipelines
+          - name: name
+            value: git-clone
+      params:
+        - name: URL
+          value: $(params.git-url)
+        - name: REVISION
+          value: $(params.git-revision)
+        - name: DELETE_EXISTING
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+    - name: install-dependencies
+      runAfter:
+        - clone
+      taskRef:
+        name: npm-ci
+      params:
+        - name: app-subdir
+          value: $(params.app-subdir)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: dependency-audit
+      runAfter:
+        - install-dependencies
+      taskRef:
+        name: npm-audit
+      params:
+        - name: app-subdir
+          value: $(params.app-subdir)
+        - name: audit-level
+          value: $(params.audit-level)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: dockerfile-lint
+      runAfter:
+        - clone
+      taskRef:
+        name: dockerfile-lint
+      params:
+        - name: app-subdir
+          value: $(params.app-subdir)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: frontend-build
+      runAfter:
+        - install-dependencies
+      taskRef:
+        name: frontend-build
+      params:
+        - name: app-subdir
+          value: $(params.app-subdir)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: sonarqube-scan
+      runAfter:
+        - frontend-build
+      when:
+        - input: $(params.enable-sonarqube)
+          operator: in
+          values:
+            - "true"
+      taskRef:
+        name: sonarqube-scan
+      params:
+        - name: app-subdir
+          value: $(params.app-subdir)
+        - name: sonar-host-url
+          value: $(params.sonar-host-url)
+        - name: sonar-project-key
+          value: $(params.sonar-project-key)
+        - name: sonar-token-secret-name
+          value: $(params.sonar-token-secret-name)
+        - name: sonar-token-secret-key
+          value: $(params.sonar-token-secret-key)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: build-image
+      runAfter:
+        - dependency-audit
+        - dockerfile-lint
+        - frontend-build
+      taskRef:
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: namespace
+            value: openshift-pipelines
+          - name: name
+            value: buildah
+      params:
+        - name: IMAGE
+          value: image-registry.openshift-image-registry.svc:5000/$(params.deploy-namespace)/$(params.image-name):$(tasks.clone.results.COMMIT)
+        - name: DOCKERFILE
+          value: $(params.app-subdir)/Dockerfile
+        - name: CONTEXT
+          value: $(params.app-subdir)
+        - name: TLS_VERIFY
+          value: "false"
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: deploy
+      runAfter:
+        - build-image
+      taskRef:
+        resolver: cluster
+        params:
+          - name: kind
+            value: task
+          - name: namespace
+            value: openshift-pipelines
+          - name: name
+            value: helm-upgrade-from-source
+      params:
+        - name: charts_dir
+          value: $(params.app-subdir)/helm/debitos-tributarios
+        - name: release_name
+          value: $(params.release-name)
+        - name: release_namespace
+          value: $(params.deploy-namespace)
+        - name: values_file
+          value: values.yaml
+        - name: overwrite_values
+          value: image.repository=image-registry.openshift-image-registry.svc:5000/$(params.deploy-namespace)/$(params.image-name),image.tag=$(tasks.clone.results.COMMIT),image.pullPolicy=Always,route.enabled=true,route.host=$(params.route-host)
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+    - name: verify-rollout
+      runAfter:
+        - deploy
+      taskRef:
+        name: rollout-verify
+      params:
+        - name: release-name
+          value: $(params.release-name)
+        - name: deploy-namespace
+          value: $(params.deploy-namespace)
