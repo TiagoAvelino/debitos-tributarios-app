@@ -25,11 +25,11 @@ ingress:
   tls: []
 
 route:
-  enabled: false
+  enabled: true
   host: ""
   path: /
   tls:
-    enabled: false
+    enabled: true
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
 
