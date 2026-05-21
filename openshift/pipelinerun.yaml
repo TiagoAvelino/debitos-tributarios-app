@@ -12,7 +12,7 @@ spec:
     - name: git-url
       value: https://github.com/TiagoAvelino/debitos-tributarios-app.git
     - name: git-revision
-      value: main
+      value: sonar
     - name: app-subdir
       value: .
     - name: helm-values-file
