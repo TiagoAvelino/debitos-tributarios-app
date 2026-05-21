@@ -8,7 +8,7 @@ RUN npm run build
 
 # Serve
 FROM image-registry.openshift-image-registry.svc:5000/openshift/nginx:1.26-ubi9
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/dist /opt/app-root/src
+RUN printf 'ok\n' > /opt/app-root/src/health
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]

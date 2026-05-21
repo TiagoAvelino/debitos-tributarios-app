@@ -460,6 +460,6 @@ spec:
         - name: revision
           value: $(tasks.update-helm-image.results.COMMIT)
         - name: flags
-          value: --server $(params.argocd-server) --insecure --grpc-web
+          value: --
         - name: argocd-version
           value: v2.11.7
