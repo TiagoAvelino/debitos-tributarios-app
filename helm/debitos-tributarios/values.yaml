@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: image-registry.openshift-image-registry.svc:5000/debitos-tributarios/debitos-tributarios
-  tag: "560583d045c82fade1c5289f2b19d609f053aed5"
+  tag: "90e88d56a479f038b76cdfbb82f1b8da29660ba4"
   pullPolicy: IfNotPresent
 
 nameOverride: ""
