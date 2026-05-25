@@ -34,23 +34,13 @@ spec:
     - name: sonar-token-secret-key
       value: token
     - name: git-user-name
-      value: openshift-pipeline
+      value: TiagoAvelino
     - name: git-user-email
-      value: openshift-pipeline@example.com
+      value: TiagoAvelino@users.noreply.github.com
     - name: argocd-server
       value: openshift-gitops-server.openshift-gitops.svc.cluster.local:443
     - name: argocd-application
       value: debitos-tributarios
-    - name: argocd-insecure
-      value: "true"
-    - name: argocd-grpc-web
-      value: "true"
-    - name: argocd-sync-timeout
-      value: "300"
-    - name: argocd-token-secret-name
-      value: argocd-token
-    - name: argocd-token-secret-key
-      value: token
   workspaces:
     - name: shared-workspace
       volumeClaimTemplate:
@@ -60,3 +50,6 @@ spec:
           resources:
             requests:
               storage: 1Gi
+    - name: git-auth
+      secret:
+        secretName: github-basic-auth
