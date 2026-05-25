@@ -141,7 +141,7 @@ function EmissaoForm({ onEmitir }) {
 
   return (
     <section className="panel">
-      <h2>Emissão de débito tributário</h2>
+      <h2>Validação de débito tributário</h2>
       <p className="panel-desc">
         Simulação de lançamento de débito. Os dados ficam apenas no navegador.
       </p>
